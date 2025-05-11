@@ -1,0 +1,22 @@
+**README**
+
+This OSS Program runs simultaneous processes on a artificial system clock that that has a process control block to store worker processes and it also sends and Receives messages from the processes. We Try to add and remove resources based on requests from childs. 
+
+This program should be run by first compiling using the command "make" in the terminal.
+
+When opening this file in the command line you should just do ./oss with arguments
+
+These arguments include [-h -n -s -i -f] with the optional -h argument in the beginning of the file for a list of helpful tips to run the program.
+
+To run the program an example command would be "./oss -n 5 -s 3 -i 100 -f oss.log" 
+
+There should also be a worker file
+To use the worker.exe an example command would be "./worker 1"
+
+[!!CURRENT PROBLEMS!!]
+I cannot add the timing for only launching processes at the given interval for -i 
+The deadlock recovery function may need alot more more but it tries to get rid of the process with the most resources.
+
+I tried to use the deadlock detection from class but I dont know if its running correctly. It seems to be.
+
+
