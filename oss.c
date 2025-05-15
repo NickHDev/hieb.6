@@ -199,6 +199,7 @@ int main(int argc, char *argv[])
 // Functions to handle logic of main while loop
 void signal_handler(int sig)
 {
+    print_final_report();
     for (int i = 0; i < 20; i++)
     {
         if (shm->processTable[i].occupied)
@@ -226,7 +227,6 @@ void signal_handler(int sig)
     {
         fclose(log_file);
     }
-
     exit(EXIT_FAILURE);
 }
 void incrementClock(int timeToIncrement)
