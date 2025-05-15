@@ -104,7 +104,6 @@ int main(int argc, char *argv[])
         sendmsg.mtype = receivemsg.childPid;
 
         receivemsg.pageRequest = floor(receivemsg.pageRequest / 1024);
-        printf("Page Request: %d\n", receivemsg.pageRequest);
         int sim_pid = -1;
         bool pageFault = true;
         // get sim pid
@@ -140,6 +139,8 @@ int main(int argc, char *argv[])
                     if (strcmp(receivemsg.mtext, "Write") == 0)
                     {
                         shm->frameTable[i].dirtyBit = 1;
+                        printf("P%d requesting write of address %d at time %d:%d\n", sim_pid, receivemsg.pageRequest, shm->clock.seconds, shm->clock.nano);
+                        fprintf(log_file, "P%d requesting write of address %d at time %d:%d\n", sim_pid, receivemsg.pageRequest, shm->clock.seconds, shm->clock.nano);
                     }
                     incrementClock(0);
                     strcpy(sendmsg.mtext, "Granted");
@@ -155,6 +156,8 @@ int main(int argc, char *argv[])
         }
         else if (pageFault) // put it in blocked queue until event time
         {
+            printf("Address %d is not in frame table, pagefault\n", receivemsg.pageRequest);
+            fprintf(log_file, "Address %d is not in frame table, pagefault\n", receivemsg.pageRequest);
             for (int i = 0; i < 18; i++)
             {
                 if (shm->blocked_queue.processes[i] == -1)
@@ -172,20 +175,6 @@ int main(int argc, char *argv[])
         // Check if Terminating
         else if (strcmp(receivemsg.mtext, "Terminating") == 0)
         {
-            // Release all of frames
-            for (int i = 0; i < 256; i++)
-            {
-                if (shm->frameTable[i].processID == sim_pid)
-                {
-                    shm->frameTable[i].LRU_TimeStampSecond = 0;
-                    shm->frameTable[i].LRU_TimeStampNano = 0;
-                    shm->frameTable[i].dirtyBit = -1;
-                    shm->frameTable[i].occupied = false;
-                    shm->frameTable[i].processID = -1;
-                    shm->frameTable[i].pagenumber = -1;
-                }
-            }
-
             strcpy(sendmsg.mtext, "Terminating");
             if (msgsnd(msqid, &sendmsg, sizeof(message) - sizeof(long), 0) == -1)
             {
@@ -242,7 +231,6 @@ void signal_handler(int sig)
 }
 void incrementClock(int timeToIncrement)
 {
-    printf("In clock\n");
     if (timeToIncrement == 0)
         shm->clock.nano += CLOCK_INCREMENT;
     else
@@ -403,7 +391,8 @@ void printStatus(FILE *fp)
     fprintf(fp, "OSS PID: %d SysClockS: %d SysclockNano: %d\n", getpid(), shm->clock.seconds, shm->clock.nano);
 
     // print frame table
-    printf("Frame Table:\n");
+    printf("               ---- Frame Table ----           \n");
+    printf("       Occupied    DirtyBit    LastRefS    LastRefNano \n");
     fprintf(fp, "               ---- Frame Table ----           \n");
     fprintf(fp, "       Occupied    DirtyBit    LastRefS    LastRefNano \n");
     for (int i = 0; i < 256; i++)
@@ -421,16 +410,15 @@ void printStatus(FILE *fp)
     {
         if (shm->processTable[i].occupied == true)
         {
-            printf("Process ID: %d Page Table: ", shm->processTable[i].pid);
-            fprintf(fp, "Process ID: %d Page Table: ", shm->processTable[i].pid);
+            printf("Process ID: %d Page Table: [ ", i);
+            fprintf(fp, "Process ID: %d Page Table: [ ", i);
             for (int j = 0; j < 32; j++)
             {
-                if (shm->processTable[i].pageTable[j] != -1)
-                {
-                    printf("%d ", shm->processTable[i].pageTable[j]);
-                    fprintf(fp, "%d ", shm->processTable[i].pageTable[j]);
-                }
+                printf("%d ", shm->processTable[i].pageTable[j]);
+                fprintf(fp, "%d ", shm->processTable[i].pageTable[j]);
             }
+            printf("]\n");
+            fprintf(fp, "]\n");
             printf("\n");
             fprintf(fp, "\n");
         }
@@ -439,7 +427,7 @@ void printStatus(FILE *fp)
     fprintf(fp, "\n");
 
     fprintf(log_file, "\n");
-    shm->log_lines += 50; // Approximate line count for this log entry
+    shm->log_lines += 290; // Approximate line count for this log entry
 }
 void print_final_report(void)
 {
@@ -458,20 +446,12 @@ void check_blocked_queue(void)
     // Checking if there is a process in blocked queue
     if (shm->blocked_queue.count <= 0)
     {
-        printf("None in blocked queue\n");
         return; // No processes waiting
     }
-    int noEventTime = false;
+    int noEventTime = true;
     int sim_pid = -1;
     int freeFrame = false;
     int lastUsedFrame = -1;
-    /*
-    see if the event wait has come up for any process
-    if so make it ready
-    give it either an empty frame if it exists
-    if no free frame, give it the frame LRU
-    set its LRU bit to current time
-    */
 
     // Check if any process in the blocked queue event wait time has come up
     for (int i = 0; i < shm->blocked_queue.count; i++)
@@ -486,9 +466,11 @@ void check_blocked_queue(void)
                     noEventTime = false;
                     break;
                 }
-                else
-                    noEventTime = true;
             }
+        }
+        if (noEventTime == false)
+        {
+            break;
         }
     }
 
@@ -511,6 +493,8 @@ void check_blocked_queue(void)
             if (shm->frameTable[i].occupied == false)
             {
                 freeFrame = true;
+                printf("Address %d in frame %d, giving data to P%d at time %d:%d\n", shm->processTable[sim_pid].pageRequest, i, sim_pid, shm->clock.seconds, shm->clock.nano);
+                fprintf(log_file, "Address %d in frame %d, giving data to P%d at time %d:%d\n", shm->processTable[sim_pid].pageRequest, i, sim_pid, shm->clock.seconds, shm->clock.nano);
                 shm->frameTable[i].LRU_TimeStampSecond = shm->clock.seconds;
                 shm->frameTable[i].LRU_TimeStampNano = shm->clock.nano;
                 shm->frameTable[i].dirtyBit = 1;
@@ -553,6 +537,8 @@ void check_blocked_queue(void)
             if (shm->frameTable[i].occupied == false)
             {
                 freeFrame = true;
+                printf("Address %d in frame %d, giving data to P%d at time %d:%d\n", shm->processTable[sim_pid].pageRequest, i, sim_pid, shm->clock.seconds, shm->clock.nano);
+                fprintf(log_file, "Address %d in frame %d, giving data to P%d at time %d:%d\n", shm->processTable[sim_pid].pageRequest, i, sim_pid, shm->clock.seconds, shm->clock.nano);
                 // Insert into frame
                 shm->frameTable[i].LRU_TimeStampSecond = shm->clock.seconds;
                 shm->frameTable[i].LRU_TimeStampNano = shm->clock.nano;
@@ -572,7 +558,7 @@ void check_blocked_queue(void)
                     cleanup();
                     exit(1);
                 }
-                
+
                 // Take out of blocked queue
                 int queuePlace = -1;
                 for (int j = 0; j <= shm->blocked_queue.count; j++)
@@ -601,28 +587,34 @@ void check_blocked_queue(void)
     // If there was no free frame we find and insert the process into the Last Recently Used frame
     if (freeFrame == false)
     {
-        for (int i = 0; i < 256; i++)
+        printf("No free frame, swapping out a page\n");
+        fprintf(log_file, "No free frame, swapping out a page\n");
+        int victim = 0;
+        long long oldest_ts = ((long long)shm->frameTable[0].LRU_TimeStampSecond * 1000000000LL) + shm->frameTable[0].LRU_TimeStampNano;
+        for (int i = 1; i < 256; ++i)
         {
-            if (i < 255)
+            long long ts = ((long long)shm->frameTable[i].LRU_TimeStampSecond * 1000000000LL) + shm->frameTable[i].LRU_TimeStampNano;
+            if (ts < oldest_ts)
             {
-                if ((shm->frameTable[i].LRU_TimeStampSecond < shm->frameTable[i + 1].LRU_TimeStampSecond) && (shm->frameTable[i].LRU_TimeStampNano < shm->frameTable[i + 1].LRU_TimeStampNano))
-                {
-                    lastUsedFrame = i;
-                }
-                else
-                    lastUsedFrame = i + 1;
+                oldest_ts = ts;
+                victim = i;
             }
         }
         // Insert the last used frame and take out the previous process
-        int processID = shm->frameTable[lastUsedFrame].processID;
-        shm->processTable[processID].pageTable[shm->frameTable[lastUsedFrame].pagenumber] = -1;
+        int processID = shm->frameTable[victim].processID;
+        shm->processTable[processID].pageTable[shm->frameTable[victim].pagenumber] = -1;
 
-        shm->frameTable[lastUsedFrame].LRU_TimeStampSecond = shm->clock.seconds;
-        shm->frameTable[lastUsedFrame].LRU_TimeStampNano = shm->clock.nano;
-        shm->frameTable[lastUsedFrame].dirtyBit = 1;
-        shm->frameTable[lastUsedFrame].occupied = true;
-        shm->frameTable[lastUsedFrame].pagenumber = shm->processTable[sim_pid].pageRequest;
-        shm->frameTable[lastUsedFrame].processID = sim_pid;
+        // Print swap
+        printf("Clearing out frame %d and swapping in P%d page %d\n", victim, sim_pid, shm->processTable[sim_pid].pageRequest);
+        fprintf(log_file, "Clearing out frame %d and swapping in P%d page %d\n", victim, sim_pid, shm->processTable[sim_pid].pageRequest);
+
+        shm->frameTable[victim].LRU_TimeStampSecond = shm->clock.seconds;
+        shm->frameTable[victim].LRU_TimeStampNano = shm->clock.nano;
+        shm->frameTable[victim].dirtyBit = 1;
+        shm->frameTable[victim].occupied = true;
+        shm->frameTable[victim].pagenumber = shm->processTable[sim_pid].pageRequest;
+        shm->frameTable[victim].processID = sim_pid;
+        shm->processTable[sim_pid].pageTable[shm->processTable[sim_pid].pageRequest] = victim;
 
         // Send the process the good news
         message sendmsg;
@@ -670,10 +662,25 @@ void handle_termination(void)
         {
             if (shm->processTable[i].pid == completedPid)
             {
+                printf("Process %d terminated at time %d:%d\n", completedPid, shm->clock.seconds, shm->clock.nano);
+                fprintf(log_file, "Process %d terminated at time %d:%d\n", completedPid, shm->clock.seconds, shm->clock.nano);
                 // Clear Resources
                 for (int j = 0; j < 32; j++)
                 {
                     shm->processTable[i].pageTable[j] = -1;
+                }
+                // Release all of frames
+                for (int k = 0; k < 256; k++)
+                {
+                    if (shm->frameTable[k].processID == shm->processTable[i].sim_pid)
+                    {
+                        shm->frameTable[k].LRU_TimeStampSecond = 0;
+                        shm->frameTable[k].LRU_TimeStampNano = 0;
+                        shm->frameTable[k].dirtyBit = -1;
+                        shm->frameTable[k].occupied = false;
+                        shm->frameTable[k].processID = -1;
+                        shm->frameTable[k].pagenumber = -1;
+                    }
                 }
                 shm->processTable[i].occupied = 0;
                 shm->processTable[i].pid = 0;
@@ -681,6 +688,7 @@ void handle_termination(void)
                 shm->processTable[i].startSeconds = 0;
                 shm->processTable[i].startNano = 0;
                 shm->processTable[i].isBlocked = 0;
+
                 break;
             }
         }

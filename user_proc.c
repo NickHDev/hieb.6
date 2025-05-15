@@ -57,12 +57,12 @@ int main(int argc, char *argv[])
         {
             int decision = rand() % 100;
             int byteRequest = rand() % 32000;
-            if (decision > 50) // Request a resource if we dont have all of them
+            if (decision > 30) // Request a resource if we dont have all of them
             {
                 strcpy(message_str, "Read");
                 isWaiting = true;
             }
-            else if (decision < 50 && decision > 2) // Release a resource
+            else if (decision < 30 && decision > 1) // Release a resource
             {
                 strcpy(message_str, "Write");
                 isWaiting = true;
@@ -96,7 +96,6 @@ int main(int argc, char *argv[])
         }
         if (strcmp(receivemsg.mtext, "Granted") == 0)
         {
-            printf("Process: %d has been granted a resource\n\n", getpid());
             isWaiting = false;
         }
         else if (strcmp(receivemsg.mtext, "Terminating") == 0)
