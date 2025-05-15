@@ -104,7 +104,7 @@ int main(int argc, char *argv[])
             printf("Process: %d is terminating\n", getpid());
             terminate = true;
         }
-        usleep(1000); // Sleep for 1ms
+        //usleep(1000); // Sleep for 1ms
     }
     shmdt(shm);
     return 0;

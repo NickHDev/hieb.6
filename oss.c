@@ -71,6 +71,7 @@ int main(int argc, char *argv[])
     // Main loop of our OSS
     while (shm->completedProcesses < proc || shm->runningProcesses > 0)
     {
+        incrementClock(0);
         // Non-Blocking waitpid to see if a child process has terminated
         handle_termination();
 
@@ -91,7 +92,6 @@ int main(int argc, char *argv[])
 
         // Determine if we can grant any outstanding requests
         check_blocked_queue();
-
         // Check for a message from child process
         message receivemsg;
         if (msgrcv(msqid, &receivemsg, sizeof(message), getpid(), 0) == -1)
@@ -104,6 +104,7 @@ int main(int argc, char *argv[])
         sendmsg.mtype = receivemsg.childPid;
 
         receivemsg.pageRequest = floor(receivemsg.pageRequest / 1024);
+        printf("Page Request: %d\n", receivemsg.pageRequest);
         int sim_pid = -1;
         bool pageFault = true;
         // get sim pid
@@ -116,38 +117,24 @@ int main(int argc, char *argv[])
             }
         }
 
-        // Check if Terminating
-        if (strcmp(receivemsg.mtext, "Terminating") == 0)
+        // Check for page fault (request already in frame table)
+        for (int i = 0; i < 256; i++)
         {
-            // Release all of frames
-            for (int i = 0; i < 256; i++)
+            if (shm->frameTable[i].processID == sim_pid && shm->frameTable[i].pagenumber == receivemsg.pageRequest)
             {
-                if (shm->frameTable[i].processID == sim_pid)
-                {
-                    shm->frameTable[i].LRU_TimeStampSecond = 0;
-                    shm->frameTable[i].LRU_TimeStampNano = 0;
-                    shm->frameTable[i].dirtyBit = -1;
-                    shm->frameTable[i].occupied = 0;
-                    shm->frameTable[i].processID = -1;
-                    shm->frameTable[i].pagenumber = -1;
-                }
+                pageFault = false;
+                break;
             }
-
-            strcpy(sendmsg.mtext, "Terminating");
-            if (msgsnd(msqid, &sendmsg, sizeof(message) - sizeof(long), 0) == -1)
-            {
-                perror("msgsnd in oss in terminating");
-                cleanup();
-                exit(1);
-            }
+            else
+                pageFault = true;
         }
-        else // Check for page fault (request already in frame table)
+
+        if (!pageFault)
         {
             for (int i = 0; i < 256; i++)
             {
                 if (shm->frameTable[i].processID == sim_pid && shm->frameTable[i].pagenumber == receivemsg.pageRequest)
                 {
-                    pageFault = false;
                     shm->frameTable[i].LRU_TimeStampSecond = shm->clock.seconds;
                     shm->frameTable[i].LRU_TimeStampNano = shm->clock.nano;
                     if (strcmp(receivemsg.mtext, "Write") == 0)
@@ -164,13 +151,48 @@ int main(int argc, char *argv[])
                     }
                     break;
                 }
-                else
-                    pageFault = true;
             }
         }
-
-        if (pageFault) // put it in blocked queue until event time
+        else if (pageFault) // put it in blocked queue until event time
         {
+            for (int i = 0; i < 18; i++)
+            {
+                if (shm->blocked_queue.processes[i] == -1)
+                {
+                    shm->blocked_queue.processes[i] = sim_pid;
+                    shm->blocked_queue.count++;
+                    shm->processTable[sim_pid].pageRequest = receivemsg.pageRequest;
+                    shm->processTable[sim_pid].isBlocked = true;
+                    shm->processTable[sim_pid].eventTimeNano = shm->clock.nano + EVENT_WAIT_TIME;
+                    shm->processTable[sim_pid].eventTimeSeconds = shm->clock.seconds;
+                    break;
+                }
+            }
+        }
+        // Check if Terminating
+        else if (strcmp(receivemsg.mtext, "Terminating") == 0)
+        {
+            // Release all of frames
+            for (int i = 0; i < 256; i++)
+            {
+                if (shm->frameTable[i].processID == sim_pid)
+                {
+                    shm->frameTable[i].LRU_TimeStampSecond = 0;
+                    shm->frameTable[i].LRU_TimeStampNano = 0;
+                    shm->frameTable[i].dirtyBit = -1;
+                    shm->frameTable[i].occupied = false;
+                    shm->frameTable[i].processID = -1;
+                    shm->frameTable[i].pagenumber = -1;
+                }
+            }
+
+            strcpy(sendmsg.mtext, "Terminating");
+            if (msgsnd(msqid, &sendmsg, sizeof(message) - sizeof(long), 0) == -1)
+            {
+                perror("msgsnd in oss in terminating");
+                cleanup();
+                exit(1);
+            }
         }
 
         // Every second check print frame table and page tables
@@ -220,6 +242,7 @@ void signal_handler(int sig)
 }
 void incrementClock(int timeToIncrement)
 {
+    printf("In clock\n");
     if (timeToIncrement == 0)
         shm->clock.nano += CLOCK_INCREMENT;
     else
@@ -254,6 +277,8 @@ void launchProcess(void)
                 shm->processTable[i].startNano = shm->clock.nano;
                 shm->processTable[i].isBlocked = 0;
                 shm->processTable[i].eventTimeNano = 0;
+                shm->processTable[i].eventTimeSeconds = 0;
+                shm->processTable[i].pageRequest = -1;
                 // Set page table to -1
                 for (int j = 0; j < 32; j++)
                 {
@@ -373,12 +398,45 @@ void cleanup(void)
 }
 void printStatus(FILE *fp)
 {
+    printf("In print\n");
     printf("OSS PID: %d SysClockS: %d SysclockNano: %d\n", getpid(), shm->clock.seconds, shm->clock.nano);
     fprintf(fp, "OSS PID: %d SysClockS: %d SysclockNano: %d\n", getpid(), shm->clock.seconds, shm->clock.nano);
 
     // print frame table
+    printf("Frame Table:\n");
+    fprintf(fp, "               ---- Frame Table ----           \n");
+    fprintf(fp, "       Occupied    DirtyBit    LastRefS    LastRefNano \n");
+    for (int i = 0; i < 256; i++)
+    {
+        printf("Frame %d: %d   %d  %d  %d\n", i, shm->frameTable[i].occupied, shm->frameTable[i].dirtyBit, shm->frameTable[i].LRU_TimeStampSecond, shm->frameTable[i].LRU_TimeStampNano);
+        fprintf(fp, "Frame %d: %d           %d          %d          %d\n", i, shm->frameTable[i].occupied, shm->frameTable[i].dirtyBit, shm->frameTable[i].LRU_TimeStampSecond, shm->frameTable[i].LRU_TimeStampNano);
+    }
+    printf("\n");
+    fprintf(fp, "\n");
 
     // print page tables
+    printf("Page Tables:\n");
+    fprintf(fp, "Page Tables:\n");
+    for (int i = 0; i < 18; i++)
+    {
+        if (shm->processTable[i].occupied == true)
+        {
+            printf("Process ID: %d Page Table: ", shm->processTable[i].pid);
+            fprintf(fp, "Process ID: %d Page Table: ", shm->processTable[i].pid);
+            for (int j = 0; j < 32; j++)
+            {
+                if (shm->processTable[i].pageTable[j] != -1)
+                {
+                    printf("%d ", shm->processTable[i].pageTable[j]);
+                    fprintf(fp, "%d ", shm->processTable[i].pageTable[j]);
+                }
+            }
+            printf("\n");
+            fprintf(fp, "\n");
+        }
+    }
+    printf("\n");
+    fprintf(fp, "\n");
 
     fprintf(log_file, "\n");
     shm->log_lines += 50; // Approximate line count for this log entry
@@ -399,8 +457,14 @@ void check_blocked_queue(void)
 {
     // Checking if there is a process in blocked queue
     if (shm->blocked_queue.count <= 0)
-        return; // No processes waiting for resources
-
+    {
+        printf("None in blocked queue\n");
+        return; // No processes waiting
+    }
+    int noEventTime = false;
+    int sim_pid = -1;
+    int freeFrame = false;
+    int lastUsedFrame = -1;
     /*
     see if the event wait has come up for any process
     if so make it ready
@@ -409,15 +473,187 @@ void check_blocked_queue(void)
     set its LRU bit to current time
     */
 
-   
     // Check if any process in the blocked queue event wait time has come up
-    for (int i = 0; i < shm->blocked_queue.count + 1; i++)
+    for (int i = 0; i < shm->blocked_queue.count; i++)
     {
-        int processId = shm->blocked_queue.processes[i];
+        sim_pid = shm->blocked_queue.processes[i];
         for (int j = 0; j < 18; j++)
         {
-            if (shm->processTable[j].sim_pid == processId)
+            if (shm->processTable[j].sim_pid == sim_pid)
             {
+                if (shm->clock.nano >= shm->processTable[j].eventTimeNano || shm->clock.seconds > shm->processTable[j].eventTimeSeconds)
+                {
+                    noEventTime = false;
+                    break;
+                }
+                else
+                    noEventTime = true;
+            }
+        }
+    }
+
+    // if no process had its event come up increment clock to the head of the queues event time
+    if (noEventTime == true)
+    {
+        // Set the time to the event time for the process
+        sim_pid = shm->blocked_queue.processes[0];
+        if (shm->clock.seconds < shm->processTable[sim_pid].eventTimeSeconds)
+        {
+            shm->clock.seconds = shm->processTable[sim_pid].eventTimeSeconds;
+        }
+        if (shm->clock.nano < shm->processTable[sim_pid].eventTimeNano)
+        {
+            shm->clock.nano = shm->processTable[sim_pid].eventTimeNano;
+        }
+        // Insert the page into a free frame if there is one
+        for (int i = 0; i < 256; i++)
+        {
+            if (shm->frameTable[i].occupied == false)
+            {
+                freeFrame = true;
+                shm->frameTable[i].LRU_TimeStampSecond = shm->clock.seconds;
+                shm->frameTable[i].LRU_TimeStampNano = shm->clock.nano;
+                shm->frameTable[i].dirtyBit = 1;
+                shm->frameTable[i].occupied = true;
+                shm->frameTable[i].pagenumber = shm->processTable[sim_pid].pageRequest;
+                shm->frameTable[i].processID = sim_pid;
+                shm->processTable[sim_pid].pageTable[shm->processTable[sim_pid].pageRequest] = i;
+                // Take out of blocked queue
+                for (int j = 0; j <= shm->blocked_queue.count; j++)
+                {
+                    if (j == shm->blocked_queue.count)
+                    {
+                        shm->blocked_queue.processes[j] = -1;
+                        shm->blocked_queue.count--;
+                    }
+                    else
+                    {
+                        shm->blocked_queue.processes[j] = shm->blocked_queue.processes[j + 1];
+                    }
+                }
+                message sendmsg;
+                sendmsg.mtype = shm->processTable[sim_pid].pid;
+                strcpy(sendmsg.mtext, "Granted");
+                if (msgsnd(msqid, &sendmsg, sizeof(message) - sizeof(long), 0) == -1)
+                {
+                    perror("msgsnd in oss in granted");
+                    cleanup();
+                    exit(1);
+                }
+                break;
+            }
+        }
+    }
+    // There was a process that the event time came up to
+    else if (!noEventTime)
+    {
+        // Insert the page into a free frame if there is one
+        for (int i = 0; i < 256; i++)
+        {
+            if (shm->frameTable[i].occupied == false)
+            {
+                freeFrame = true;
+                // Insert into frame
+                shm->frameTable[i].LRU_TimeStampSecond = shm->clock.seconds;
+                shm->frameTable[i].LRU_TimeStampNano = shm->clock.nano;
+                shm->frameTable[i].dirtyBit = 1;
+                shm->frameTable[i].occupied = true;
+                shm->frameTable[i].pagenumber = shm->processTable[sim_pid].pageRequest;
+                shm->frameTable[i].processID = sim_pid;
+                shm->processTable[sim_pid].pageTable[shm->processTable[sim_pid].pageRequest] = i;
+
+                // Send the process the good news
+                message sendmsg;
+                sendmsg.mtype = shm->processTable[sim_pid].pid;
+                strcpy(sendmsg.mtext, "Granted");
+                if (msgsnd(msqid, &sendmsg, sizeof(message) - sizeof(long), 0) == -1)
+                {
+                    perror("msgsnd in oss in granted");
+                    cleanup();
+                    exit(1);
+                }
+                
+                // Take out of blocked queue
+                int queuePlace = -1;
+                for (int j = 0; j <= shm->blocked_queue.count; j++)
+                {
+                    if (shm->blocked_queue.processes[j] == sim_pid)
+                    {
+                        queuePlace = j;
+                    }
+                }
+                for (int j = queuePlace; j <= shm->blocked_queue.count; j++)
+                {
+                    if (j == shm->blocked_queue.count)
+                    {
+                        shm->blocked_queue.processes[j] = -1;
+                        shm->blocked_queue.count--;
+                    }
+                    else
+                    {
+                        shm->blocked_queue.processes[j] = shm->blocked_queue.processes[j + 1];
+                    }
+                }
+                break;
+            }
+        }
+    }
+    // If there was no free frame we find and insert the process into the Last Recently Used frame
+    if (freeFrame == false)
+    {
+        for (int i = 0; i < 256; i++)
+        {
+            if (i < 255)
+            {
+                if ((shm->frameTable[i].LRU_TimeStampSecond < shm->frameTable[i + 1].LRU_TimeStampSecond) && (shm->frameTable[i].LRU_TimeStampNano < shm->frameTable[i + 1].LRU_TimeStampNano))
+                {
+                    lastUsedFrame = i;
+                }
+                else
+                    lastUsedFrame = i + 1;
+            }
+        }
+        // Insert the last used frame and take out the previous process
+        int processID = shm->frameTable[lastUsedFrame].processID;
+        shm->processTable[processID].pageTable[shm->frameTable[lastUsedFrame].pagenumber] = -1;
+
+        shm->frameTable[lastUsedFrame].LRU_TimeStampSecond = shm->clock.seconds;
+        shm->frameTable[lastUsedFrame].LRU_TimeStampNano = shm->clock.nano;
+        shm->frameTable[lastUsedFrame].dirtyBit = 1;
+        shm->frameTable[lastUsedFrame].occupied = true;
+        shm->frameTable[lastUsedFrame].pagenumber = shm->processTable[sim_pid].pageRequest;
+        shm->frameTable[lastUsedFrame].processID = sim_pid;
+
+        // Send the process the good news
+        message sendmsg;
+        sendmsg.mtype = shm->processTable[sim_pid].pid;
+        strcpy(sendmsg.mtext, "Granted");
+        if (msgsnd(msqid, &sendmsg, sizeof(message) - sizeof(long), 0) == -1)
+        {
+            perror("msgsnd in oss in granted");
+            cleanup();
+            exit(1);
+        }
+
+        // Unblock the process that was inserted
+        int queuePlace = -1;
+        for (int j = 0; j <= shm->blocked_queue.count; j++)
+        {
+            if (shm->blocked_queue.processes[j] == sim_pid)
+            {
+                queuePlace = j;
+            }
+        }
+        for (int j = queuePlace; j <= shm->blocked_queue.count; j++)
+        {
+            if (j == shm->blocked_queue.count)
+            {
+                shm->blocked_queue.processes[j] = -1;
+                shm->blocked_queue.count--;
+            }
+            else
+            {
+                shm->blocked_queue.processes[j] = shm->blocked_queue.processes[j + 1];
             }
         }
     }

@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <time.h>
 #include <errno.h>
+#include <math.h>
 #define SHM_KEY 284742
 #define SEM_KEY 284743
 #undef BUFF_SZ
@@ -24,6 +25,7 @@
 #define LOG_INTERVAL_FULL 1000000000 // 1 seconds
 #define CLOCK_INCREMENT 100000000
 #define PROCESS_TIME_DECISION 250000000   // 2.5ms
+#define EVENT_WAIT_TIME 14000000
 
 // Message queue
 typedef struct msgbuf
@@ -42,7 +44,9 @@ typedef struct PCB
     int startSeconds;
     int startNano;
     int eventTimeNano;
+    int eventTimeSeconds;
     int pageTable[32]; // what frame each page is in
+    int pageRequest;
     int isBlocked;
 } PCB;
 // System clock
